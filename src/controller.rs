@@ -119,6 +119,66 @@ impl serde::Serialize for ByteCount {
     }
 }
 
+struct NewFile<'a> {
+    filename: &'a Path,
+    file: Option<tokio::fs::File>,
+    size: ByteCount,
+}
+
+impl<'a> NewFile<'a> {
+    async fn new(filename: &'a Path) -> Result<NewFile<'a>> {
+        let file = Some(
+            tokio::fs::File::create(filename)
+                .await
+                .with_context(|| format!("Failed to create {}", filename.display()))?,
+        );
+
+        Ok(Self {
+            filename,
+            file,
+            size: ByteCount(0),
+        })
+    }
+
+    async fn write_all(&mut self, data: &[u8]) -> Result<()> {
+        self.file
+            .as_mut()
+            .unwrap()
+            .write_all(data)
+            .await
+            .with_context(|| format!("Failed to write to {}", self.filename.display()))?;
+
+        self.size.0 += data.len();
+
+        Ok(())
+    }
+
+    async fn close(mut self) -> Result<ByteCount> {
+        self.file
+            .as_mut()
+            .unwrap()
+            .flush()
+            .await
+            .with_context(|| format!("Failed to flush {}", self.filename.display()))?;
+
+        self.file.take();
+
+        tracing::debug!("Finished writing to {}", self.filename.display());
+
+        Ok(self.size)
+    }
+}
+
+impl<'a> Drop for NewFile<'a> {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            if let Err(err) = std::fs::remove_file(self.filename) {
+                tracing::error!("Failed to remove {}: {}", self.filename.display(), err);
+            }
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct UploadConfig {
     pub expiry: chrono::DateTime<chrono::Local>,
@@ -155,34 +215,12 @@ impl Admin {
 pub struct User {}
 
 impl User {
-    async fn write_file(
-        mut file: tokio::fs::File,
-        mut field: axum::extract::multipart::Field<'_>,
-    ) -> Result<usize> {
-        let mut file_size = 0;
-
-        while let Some(blob) = field.next().await {
-            let blob = blob.context("Failed to read data")?;
-            file.write_all(&blob)
-                .await
-                .context("Failed to write data")?;
-
-            file_size += blob.len();
-        }
-
-        file.flush().await.context("Failed to flush data")?;
-
-        drop(file);
-
-        Ok(file_size)
-    }
-
     async fn write_files(
         upload_directory: &Path,
         mut files: Multipart,
         total_size: &mut ByteCount,
     ) -> Result<()> {
-        while let Some(field) = files
+        while let Some(mut field) = files
             .next_field()
             .await
             .context("Failed to get next file")?
@@ -196,11 +234,14 @@ impl User {
 
             tracing::info!("Uploading to {}", file_path.display());
 
-            let file = tokio::fs::File::create(&file_path)
-                .await
-                .with_context(|| format!("Failed to create {}", file_path.display()))?;
+            let mut file = NewFile::new(&file_path).await?;
 
-            total_size.0 += Self::write_file(file, field).await?; // TODO - Delete partial file?
+            while let Some(blob) = field.next().await {
+                let blob = blob.context("Failed to read data")?;
+                file.write_all(&blob).await?;
+            }
+
+            *total_size += file.close().await?;
 
             tracing::debug!("Finished uploading to {}", file_path.display());
         }

@@ -15,12 +15,6 @@ use crate::controller::User;
 #[template(path = "user_upload.html")]
 struct UploadFiles {}
 
-#[derive(askama::Template)]
-#[template(path = "user_upload_success.html")]
-struct UploadFilesSuccess {
-    message: String,
-}
-
 #[derive(axum_extra::routing::TypedPath, serde::Deserialize)]
 #[typed_path("/upload/:token")]
 struct UploadToken {
@@ -39,12 +33,7 @@ async fn upload_files(
 ) -> impl IntoResponse {
     user.upload_files(token, content_length.0, files)
         .await
-        .map(|()| {
-            UploadFilesSuccess {
-                message: "SUCCESS".into(),
-            }
-            .into_response()
-        })
+        .map(|()| "SUCCESS")
         .map_err(|err| {
             tracing::error!("Failed to upload files: {err:#}");
             StatusCode::INTERNAL_SERVER_ERROR
