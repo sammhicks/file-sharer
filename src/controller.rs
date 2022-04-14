@@ -187,7 +187,10 @@ impl User {
             .await
             .context("Failed to get next file")?
         {
-            let file_name = String::from(field.file_name().context("Missing Filename")?);
+            let file_name = match field.file_name() {
+                Some(file_name) => String::from(file_name),
+                None => continue,
+            };
 
             let file_path = upload_directory.join(sanitize_path(&file_name));
 
@@ -197,7 +200,7 @@ impl User {
                 .await
                 .with_context(|| format!("Failed to create {}", file_path.display()))?;
 
-            total_size.0 += Self::write_file(file, field).await?; // TODO - Delete partial file
+            total_size.0 += Self::write_file(file, field).await?; // TODO - Delete partial file?
 
             tracing::debug!("Finished uploading to {}", file_path.display());
         }
