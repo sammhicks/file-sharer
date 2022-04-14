@@ -1,0 +1,19 @@
+[package]
+name = "file-sharer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+askama = { version = "0.11", features = [ "with-axum" ] }
+askama_axum = "0.1"
+axum = { version = "0.5", features = [ "multipart" ] }
+axum-extra = { version = "0.2", features = [ "typed-routing" ] }
+futures-util = "0.3"
+rand = "0.8"
+serde = { version = "1.0", features = [ "derive" ] }
+tokio = { version = "1.17", features = [ "rt", "macros", "signal", "sync" ] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
