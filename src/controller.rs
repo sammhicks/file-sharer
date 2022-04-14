@@ -31,12 +31,6 @@ fn sanitize_path<P: AsRef<Path>>(path: P) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadToken(String);
 
-impl UploadToken {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
 impl fmt::Display for UploadToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -157,7 +151,9 @@ impl User {
             .map(|index| controller.upload_tokens.remove(index))
             .ok_or(UploadError::InvalidToken)?;
 
-        let upload_dir = Path::new("uploads").join(token.token.as_str());
+        let now = chrono::offset::Local::now().format("%Y%m%dT%H%M%S");
+
+        let upload_dir = Path::new("uploads").join(format!("{}-{}", now, token.token));
 
         std::fs::create_dir(&upload_dir).map_err(UploadError::internal_error(
             "Failed to create upload directory",
