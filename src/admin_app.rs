@@ -5,12 +5,13 @@ use std::{
 
 use askama_axum::IntoResponse as _;
 use axum::{
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
 
-use crate::controller::Admin;
+use crate::controller::{Admin, ByteCount, UploadConfig};
 
 #[derive(askama::Template)]
 #[template(path = "admin.html")]
@@ -26,12 +27,20 @@ struct UploadPage {
     upload_url: String,
 }
 
-async fn new_upload(admin: axum::Extension<Admin>) -> impl IntoResponse {
-    let new_token = admin.new_upload_token().await;
+async fn new_upload(admin: axum::Extension<Admin>) -> Result<impl IntoResponse, StatusCode> {
+    let token_config = UploadConfig {
+        expiry: chrono::Local::now() + chrono::Duration::hours(1),
+        space_quota: ByteCount(1_000_000_000),
+    };
+
+    let new_token = admin.new_upload_token(token_config).map_err(|err| {
+        tracing::error!("Failed to create upload token: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let url = format!("http://127.0.0.1:8080/upload/{new_token}");
 
-    UploadPage { upload_url: url }.into_response()
+    Ok(UploadPage { upload_url: url }.into_response())
 }
 
 pub async fn run(admin: Admin, shutdown_signal: impl Future<Output = ()>) {
