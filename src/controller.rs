@@ -8,6 +8,7 @@ use axum::extract::Multipart;
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
+const SHARES_DIRECTORY: &str = "shares";
 const UPLOADS_DIRECTORY: &str = "uploads";
 const FILES_DIRECTORY: &str = "files";
 const TOKEN_FILENAME: &str = "token.toml";
@@ -32,9 +33,11 @@ fn sanitize_path<P: AsRef<Path>>(path: P) -> PathBuf {
     buf
 }
 
-fn create_directory<P: AsRef<Path>>(path: P) -> Result<()> {
+fn create_directory<P: AsRef<Path>>(path: P) -> Result<P> {
     std::fs::create_dir(path.as_ref())
-        .with_context(|| format!("Failed to create directory {}", path.as_ref().display()))
+        .with_context(|| format!("Failed to create directory {}", path.as_ref().display()))?;
+
+    Ok(path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +59,7 @@ impl Token {
         ))
     }
 
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }
@@ -167,56 +170,9 @@ impl<'a> NewFile<'a> {
 
         Ok(self.size)
     }
-}
 
-impl<'a> Drop for NewFile<'a> {
-    fn drop(&mut self) {
-        if self.file.take().is_some() {
-            if let Err(err) = std::fs::remove_file(self.filename) {
-                tracing::error!("Failed to remove {}: {}", self.filename.display(), err);
-            }
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct UploadConfig {
-    pub expiry: chrono::DateTime<chrono::Local>,
-    pub space_quota: ByteCount,
-}
-
-#[derive(Clone)]
-pub struct Admin {}
-
-impl Admin {
-    pub fn new_upload_token(&self, config: UploadConfig) -> Result<Token> {
-        let token = Token::new();
-
-        let token_directory = Path::new(UPLOADS_DIRECTORY).join(token.as_str());
-        create_directory(&token_directory)?;
-
-        let files_directory = token_directory.join(FILES_DIRECTORY);
-        create_directory(&files_directory)
-            .with_context(|| format!("Failed to create {}", files_directory.display()))?;
-
-        let token_filename = token_directory.join(TOKEN_FILENAME);
-
-        std::fs::write(
-            &token_filename,
-            toml::to_string(&config).context("Failed to serialize config")?,
-        )
-        .with_context(|| format!("Failed to write config to {}", token_filename.display()))?;
-
-        Ok(token)
-    }
-}
-
-#[derive(Clone)]
-pub struct User {}
-
-impl User {
-    async fn write_files(
-        upload_directory: &Path,
+    async fn from_multipart<P: AsRef<Path>>(
+        storage_directory: P,
         mut files: Multipart,
         total_size: &mut ByteCount,
     ) -> Result<()> {
@@ -230,7 +186,7 @@ impl User {
                 None => continue,
             };
 
-            let file_path = upload_directory.join(sanitize_path(&file_name));
+            let file_path = storage_directory.as_ref().join(sanitize_path(&file_name));
 
             tracing::info!("Uploading to {}", file_path.display());
 
@@ -248,7 +204,191 @@ impl User {
 
         Ok(())
     }
+}
 
+impl<'a> Drop for NewFile<'a> {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            if let Err(err) = std::fs::remove_file(self.filename) {
+                tracing::error!("Failed to remove {}: {}", self.filename.display(), err);
+            }
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ShareConfig {
+    pub expiry: chrono::DateTime<chrono::Local>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct UploadConfig {
+    pub expiry: chrono::DateTime<chrono::Local>,
+    pub space_quota: ByteCount,
+}
+
+struct TokenConfig<C, P> {
+    inner: C,
+    path: P,
+}
+
+impl<C, P> TokenConfig<C, P> {
+    fn new(path: P, config: C) -> Self {
+        Self {
+            inner: config,
+            path,
+        }
+    }
+}
+
+impl<C: std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned, P: AsRef<Path>>
+    TokenConfig<C, P>
+{
+    fn load(path: P) -> Result<Self> {
+        let file_contents = std::fs::read_to_string(path.as_ref())
+            .with_context(|| format!("Failed to read {}", path.as_ref().display()))?;
+        let inner = toml::from_str::<C>(&file_contents)
+            .with_context(|| format!("Failed to parse {}", file_contents))?;
+
+        Ok(Self { inner, path })
+    }
+
+    fn store(self) -> Result<()> {
+        std::fs::write(
+            self.path.as_ref(),
+            toml::to_string(&self.inner).context("Failed to serialize config")?,
+        )
+        .with_context(|| format!("Failed to write config to {}", self.path.as_ref().display()))
+    }
+}
+
+impl<C, P> std::ops::Deref for TokenConfig<C, P> {
+    type Target = C;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<C, P> std::ops::DerefMut for TokenConfig<C, P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+pub struct Filename(std::path::PathBuf);
+
+impl Filename {
+    pub fn display(&self) -> std::path::Display {
+        self.0.display()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Filename {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let path = String::deserialize(deserializer)?;
+
+        tracing::info!(%path);
+
+        let path = path.trim_start_matches('/');
+        let path = std::path::Path::new(path);
+
+        for component in path.components() {
+            tracing::info!(?component);
+        }
+
+        let mut components = path.components();
+
+        let filename = components
+            .next()
+            .ok_or_else(|| serde::de::Error::custom("Bad Path"))?;
+
+        let filename = if let std::path::Component::Normal(filename) = filename {
+            filename
+        } else {
+            return Err(serde::de::Error::custom("Bad Path"));
+        };
+
+        if components.next().is_some() {
+            return Err(serde::de::Error::custom("Bad Path"));
+        }
+
+        Ok(Self(std::path::PathBuf::from(filename)))
+    }
+}
+
+impl AsRef<Path> for Filename {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
+impl fmt::Display for Filename {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.display().fmt(f)
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "user_share_directory_listing.html")]
+struct ShareDirectoryListing {
+    files: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct Admin {}
+
+impl Admin {
+    pub fn new_share_token(&self, config: ShareConfig) -> Result<Token> {
+        let token = Token::new();
+
+        let token_directory = create_directory(Path::new(SHARES_DIRECTORY).join(token.as_str()))?;
+
+        create_directory(token_directory.join(FILES_DIRECTORY))?;
+        TokenConfig::new(token_directory.join(TOKEN_FILENAME), config).store()?;
+
+        Ok(token)
+    }
+
+    pub async fn share_files(&self, token: Token, files: Multipart) -> Result<()> {
+        let token_directory = Path::new(SHARES_DIRECTORY).join(token.as_str());
+
+        let token_config =
+            TokenConfig::<ShareConfig, _>::load(token_directory.join(TOKEN_FILENAME))?;
+
+        if chrono::Local::now() > token_config.expiry {
+            anyhow::bail!("Token has expired");
+        }
+
+        let mut actual_file_size = ByteCount(0);
+
+        NewFile::from_multipart(
+            token_directory.join(FILES_DIRECTORY),
+            files,
+            &mut actual_file_size,
+        )
+        .await
+    }
+
+    pub fn new_upload_token(&self, config: UploadConfig) -> Result<Token> {
+        let token = Token::new();
+
+        let token_directory = create_directory(Path::new(UPLOADS_DIRECTORY).join(token.as_str()))?;
+
+        create_directory(token_directory.join(FILES_DIRECTORY))?;
+        TokenConfig::new(token_directory.join(TOKEN_FILENAME), config).store()?;
+
+        Ok(token)
+    }
+}
+
+#[derive(Clone)]
+pub struct User {}
+
+impl User {
     pub async fn upload_files(
         &self,
         token: Token,
@@ -263,12 +403,8 @@ impl User {
 
         let token_directory = Path::new(UPLOADS_DIRECTORY).join(token.as_str());
 
-        let token_filename = token_directory.join(TOKEN_FILENAME);
-
-        let token_config =
-            std::fs::read_to_string(&token_filename).context("Failed to read token config")?;
-        let mut token_config = toml::from_str::<UploadConfig>(&token_config)
-            .context("Failed to parse token config")?;
+        let mut token_config =
+            TokenConfig::<UploadConfig, _>::load(token_directory.join(TOKEN_FILENAME))?;
 
         if chrono::Local::now() > token_config.expiry {
             anyhow::bail!("Token has expired");
@@ -279,21 +415,66 @@ impl User {
             .checked_sub(request_size)
             .context("Out of Space")?;
 
-        let upload_directory = token_directory.join(FILES_DIRECTORY);
-
         let mut actual_file_size = ByteCount(0);
 
-        let write_result = Self::write_files(&upload_directory, files, &mut actual_file_size).await;
+        let write_result = NewFile::from_multipart(
+            token_directory.join(FILES_DIRECTORY),
+            files,
+            &mut actual_file_size,
+        )
+        .await;
 
         token_config.space_quota += request_size.saturating_sub(actual_file_size);
 
-        std::fs::write(
-            &token_filename,
-            toml::to_string(&token_config).context("Failed to format token config")?,
-        )
-        .context("Failed to write token context")?;
+        token_config.store()?;
 
         write_result
+    }
+
+    pub async fn directory_listing(&self, token: Token) -> Result<String> {
+        use askama::Template;
+
+        let path = Path::new(SHARES_DIRECTORY)
+            .join(token.as_str())
+            .join(FILES_DIRECTORY);
+
+        let files = std::fs::read_dir(&path)
+            .with_context(|| format!("Failed to read directory {}", path.display()))?
+            .map(|entry| {
+                let entry =
+                    entry.with_context(|| format!("Failed to read entry in {}", path.display()))?;
+
+                Ok(entry.file_name().to_string_lossy().into_owned())
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        ShareDirectoryListing { files }
+            .render()
+            .with_context(|| format!("Failed to render template for {}", path.display()))
+    }
+
+    pub async fn open_shared_file(
+        &self,
+        token: Token,
+        filename: Filename,
+    ) -> Result<(tokio::fs::File, std::fs::Metadata, mime_guess::Mime)> {
+        let path = Path::new(SHARES_DIRECTORY)
+            .join(token.as_str())
+            .join(FILES_DIRECTORY)
+            .join(filename);
+
+        let file = tokio::fs::File::open(&path)
+            .await
+            .with_context(|| format!("Failed to open {}", path.display()))?;
+
+        let metadata = file
+            .metadata()
+            .await
+            .with_context(|| format!("Failed to get metadata for {}", path.display()))?;
+
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+
+        Ok((file, metadata, mime))
     }
 }
 

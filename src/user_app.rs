@@ -4,9 +4,7 @@ use std::{
 };
 
 use askama_axum::IntoResponse as _;
-use axum::{
-    extract::Multipart, http::StatusCode, response::IntoResponse, routing::get, Router, TypedHeader,
-};
+use axum::{extract::Multipart, http::StatusCode, response::IntoResponse, Router, TypedHeader};
 use axum_extra::routing::RouterExt;
 
 use crate::controller::User;
@@ -17,16 +15,16 @@ struct UploadFiles {}
 
 #[derive(axum_extra::routing::TypedPath, serde::Deserialize)]
 #[typed_path("/upload/:token")]
-struct UploadToken {
+struct UploadTokenPath {
     token: crate::controller::Token,
 }
 
-async fn upload_files_page(_: UploadToken) -> impl IntoResponse {
+async fn upload_files_page(_: UploadTokenPath) -> impl IntoResponse {
     UploadFiles {}.into_response()
 }
 
 async fn upload_files(
-    UploadToken { token }: UploadToken,
+    UploadTokenPath { token }: UploadTokenPath,
     TypedHeader(content_length): TypedHeader<axum::headers::ContentLength>,
     files: Multipart,
     user: axum::Extension<User>,
@@ -40,11 +38,76 @@ async fn upload_files(
         })
 }
 
+#[derive(axum_extra::routing::TypedPath, serde::Deserialize)]
+#[typed_path("/share/:token/")]
+struct DirectoryListingPath {
+    token: crate::controller::Token,
+}
+
+async fn directory_listing(
+    DirectoryListingPath { token }: DirectoryListingPath,
+    user: axum::Extension<User>,
+) -> Result<impl IntoResponse, StatusCode> {
+    user.directory_listing(token)
+        .await
+        .map(axum::response::Html)
+        .map_err(|err| {
+            tracing::error!("{:#}", err);
+
+            StatusCode::NOT_FOUND
+        })
+}
+
+#[derive(axum_extra::routing::TypedPath, serde::Deserialize)]
+#[typed_path("/share/:token/:filename")]
+struct SharedFilePath {
+    token: crate::controller::Token,
+    filename: crate::controller::Filename,
+}
+
+async fn share_file(
+    SharedFilePath { token, filename }: SharedFilePath,
+    user: axum::Extension<User>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let (file, metadata, mime) = user
+        .open_shared_file(token, filename)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not open shared file: {:#}", err);
+
+            StatusCode::NOT_FOUND
+        })?;
+
+    let stream = futures_util::stream::try_unfold(
+        tokio::io::BufReader::new(file),
+        |mut reader| async move {
+            use tokio::io::AsyncBufReadExt;
+
+            let data = reader.fill_buf().await?;
+            let data = axum::body::Bytes::copy_from_slice(data);
+            reader.consume(data.len());
+
+            Ok::<_, tokio::io::Error>((!data.is_empty()).then(|| (data, reader)))
+        },
+    );
+
+    let body = axum::body::StreamBody::new(stream);
+
+    Ok((
+        StatusCode::OK,
+        axum::TypedHeader(axum::headers::ContentType::from(mime)),
+        axum::TypedHeader(axum::headers::ContentLength(metadata.len())),
+        body,
+    )
+        .into_response())
+}
+
 pub async fn run(user: User, shutdown_signal: impl Future<Output = ()>) {
     let app = Router::new()
-        .route("/", get(|| async { "Hello, World!" }))
         .typed_get(upload_files_page)
         .typed_post(upload_files)
+        .typed_get(share_file)
+        .typed_get(directory_listing)
         .layer(axum::Extension(user));
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 8080));
