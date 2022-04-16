@@ -1,6 +1,8 @@
 use std::{
     fmt,
+    marker::PhantomData,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
@@ -227,53 +229,98 @@ pub struct UploadConfig {
     pub space_quota: ByteCount,
 }
 
-struct TokenConfig<C, P> {
-    inner: C,
-    path: P,
+struct TokenConfigMutexCore;
+
+impl TokenConfigMutexCore {
+    fn load_config<C: serde::de::DeserializeOwned>(path: &Path) -> Result<C> {
+        let file_contents = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        toml::from_str::<C>(&file_contents)
+            .with_context(|| format!("Failed to parse {}", file_contents))
+    }
+
+    fn save_config<C: serde::Serialize>(path: &Path, config: &C) -> Result<()> {
+        std::fs::write(
+            path,
+            toml::to_string(config).context("Failed to serialize config")?,
+        )
+        .with_context(|| format!("Failed to write config to {}", path.display()))
+    }
+
+    fn create_token_config<C: serde::Serialize>(&mut self, path: &Path, config: &C) -> Result<()> {
+        Self::save_config(path, config)
+    }
+
+    fn with_token_config<C: serde::de::DeserializeOwned, T, F: FnOnce(&C) -> Result<T>>(
+        &mut self,
+        path: &Path,
+        f: F,
+    ) -> Result<T> {
+        let config = Self::load_config(path)?;
+
+        f(&config)
+    }
+
+    fn with_token_config_mut<
+        C: serde::Serialize + serde::de::DeserializeOwned,
+        T,
+        F: FnOnce(&mut C) -> Result<T>,
+    >(
+        &mut self,
+        path: &Path,
+        f: F,
+    ) -> Result<T> {
+        let mut config = Self::load_config(path)?;
+
+        let result = f(&mut config)?;
+
+        Self::save_config(path, &config)?;
+
+        Ok(result)
+    }
 }
 
-impl<C, P> TokenConfig<C, P> {
-    fn new(path: P, config: C) -> Self {
+type TokenConfigMutex = tokio::sync::Mutex<TokenConfigMutexCore>;
+
+struct TokenConfig<'a, C, P: AsRef<Path>> {
+    path: P,
+    token_config_mutex: &'a TokenConfigMutex,
+    _config: PhantomData<C>,
+}
+
+impl<'a, C: serde::Serialize + serde::de::DeserializeOwned, P: AsRef<Path>> TokenConfig<'a, C, P> {
+    fn new(path: P, token_config_mutex: &'a TokenConfigMutex) -> Self {
         Self {
-            inner: config,
             path,
+            token_config_mutex,
+            _config: PhantomData,
         }
     }
-}
 
-impl<C: std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned, P: AsRef<Path>>
-    TokenConfig<C, P>
-{
-    fn load(path: P) -> Result<Self> {
-        let file_contents = std::fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read {}", path.as_ref().display()))?;
-        let inner = toml::from_str::<C>(&file_contents)
-            .with_context(|| format!("Failed to parse {}", file_contents))?;
-
-        Ok(Self { inner, path })
+    async fn create_token_config(&self, config: &C) -> Result<()> {
+        self.token_config_mutex
+            .lock()
+            .await
+            .create_token_config(self.path.as_ref(), config)
     }
 
-    fn store(self) -> Result<()> {
-        std::fs::write(
-            self.path.as_ref(),
-            toml::to_string(&self.inner).context("Failed to serialize config")?,
-        )
-        .with_context(|| format!("Failed to write config to {}", self.path.as_ref().display()))
+    async fn with_token_config<T, F: FnOnce(&C) -> Result<T>>(&self, f: F) -> Result<T> {
+        self.token_config_mutex
+            .lock()
+            .await
+            .with_token_config(self.path.as_ref(), f)
     }
-}
 
-impl<C, P> std::ops::Deref for TokenConfig<C, P> {
-    type Target = C;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    async fn with_token_config_mut<T, F: FnOnce(&mut C) -> Result<T>>(&self, f: F) -> Result<T> {
+        self.token_config_mutex
+            .lock()
+            .await
+            .with_token_config_mut(self.path.as_ref(), f)
     }
 }
 
-impl<C, P> std::ops::DerefMut for TokenConfig<C, P> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
+struct Controller {
+    token_config_mutex: TokenConfigMutex,
 }
 
 pub struct Filename(std::path::PathBuf);
@@ -290,15 +337,8 @@ impl<'de> serde::Deserialize<'de> for Filename {
         D: serde::Deserializer<'de>,
     {
         let path = String::deserialize(deserializer)?;
-
-        tracing::info!(%path);
-
         let path = path.trim_start_matches('/');
         let path = std::path::Path::new(path);
-
-        for component in path.components() {
-            tracing::info!(?component);
-        }
 
         let mut components = path.components();
 
@@ -339,16 +379,23 @@ struct ShareDirectoryListing {
 }
 
 #[derive(Clone)]
-pub struct Admin {}
+pub struct Admin {
+    controller: Arc<Controller>,
+}
 
 impl Admin {
-    pub fn new_share_token(&self, config: ShareConfig) -> Result<Token> {
+    pub async fn new_share_token(&self, config: ShareConfig) -> Result<Token> {
         let token = Token::new();
 
         let token_directory = create_directory(Path::new(SHARES_DIRECTORY).join(token.as_str()))?;
 
         create_directory(token_directory.join(FILES_DIRECTORY))?;
-        TokenConfig::new(token_directory.join(TOKEN_FILENAME), config).store()?;
+        TokenConfig::new(
+            token_directory.join(TOKEN_FILENAME),
+            &self.controller.token_config_mutex,
+        )
+        .create_token_config(&config)
+        .await?;
 
         Ok(token)
     }
@@ -356,10 +403,16 @@ impl Admin {
     pub async fn share_files(&self, token: Token, files: Multipart) -> Result<()> {
         let token_directory = Path::new(SHARES_DIRECTORY).join(token.as_str());
 
-        let token_config =
-            TokenConfig::<ShareConfig, _>::load(token_directory.join(TOKEN_FILENAME))?;
+        let token_config = TokenConfig::new(
+            token_directory.join(TOKEN_FILENAME),
+            &self.controller.token_config_mutex,
+        );
 
-        if chrono::Local::now() > token_config.expiry {
+        if chrono::Local::now()
+            > token_config
+                .with_token_config(|config: &ShareConfig| Ok(config.expiry))
+                .await?
+        {
             anyhow::bail!("Token has expired");
         }
 
@@ -373,20 +426,27 @@ impl Admin {
         .await
     }
 
-    pub fn new_upload_token(&self, config: UploadConfig) -> Result<Token> {
+    pub async fn new_upload_token(&self, config: UploadConfig) -> Result<Token> {
         let token = Token::new();
 
         let token_directory = create_directory(Path::new(UPLOADS_DIRECTORY).join(token.as_str()))?;
 
         create_directory(token_directory.join(FILES_DIRECTORY))?;
-        TokenConfig::new(token_directory.join(TOKEN_FILENAME), config).store()?;
+        TokenConfig::new(
+            token_directory.join(TOKEN_FILENAME),
+            &self.controller.token_config_mutex,
+        )
+        .create_token_config(&config)
+        .await?;
 
         Ok(token)
     }
 }
 
 #[derive(Clone)]
-pub struct User {}
+pub struct User {
+    controller: Arc<Controller>,
+}
 
 impl User {
     pub async fn upload_files(
@@ -403,17 +463,25 @@ impl User {
 
         let token_directory = Path::new(UPLOADS_DIRECTORY).join(token.as_str());
 
-        let mut token_config =
-            TokenConfig::<UploadConfig, _>::load(token_directory.join(TOKEN_FILENAME))?;
+        let token_config = TokenConfig::new(
+            token_directory.join(TOKEN_FILENAME),
+            &self.controller.token_config_mutex,
+        );
 
-        if chrono::Local::now() > token_config.expiry {
-            anyhow::bail!("Token has expired");
-        }
+        token_config
+            .with_token_config_mut(|token_config: &mut UploadConfig| {
+                if chrono::Local::now() > token_config.expiry {
+                    anyhow::bail!("Token has expired");
+                }
 
-        token_config.space_quota = token_config
-            .space_quota
-            .checked_sub(request_size)
-            .context("Out of Space")?;
+                token_config.space_quota = token_config
+                    .space_quota
+                    .checked_sub(request_size)
+                    .context("Out of Space")?;
+
+                Ok(())
+            })
+            .await?;
 
         let mut actual_file_size = ByteCount(0);
 
@@ -424,9 +492,12 @@ impl User {
         )
         .await;
 
-        token_config.space_quota += request_size.saturating_sub(actual_file_size);
-
-        token_config.store()?;
+        token_config
+            .with_token_config_mut(|token_config| {
+                token_config.space_quota += request_size.saturating_sub(actual_file_size);
+                Ok(())
+            })
+            .await?;
 
         write_result
     }
@@ -479,5 +550,14 @@ impl User {
 }
 
 pub fn new_controller() -> (Admin, User) {
-    (Admin {}, User {})
+    let controller = Arc::new(Controller {
+        token_config_mutex: TokenConfigMutex::new(TokenConfigMutexCore),
+    });
+
+    (
+        Admin {
+            controller: controller.clone(),
+        },
+        User { controller },
+    )
 }

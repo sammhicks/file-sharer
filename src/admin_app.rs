@@ -35,7 +35,7 @@ async fn new_share(admin: axum::Extension<Admin>) -> Result<impl IntoResponse, S
         expiry: chrono::Local::now() + chrono::Duration::hours(1),
     };
 
-    let new_token = admin.new_share_token(token_config).map_err(|err| {
+    let new_token = admin.new_share_token(token_config).await.map_err(|err| {
         tracing::error!("Failed to create share token: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -82,7 +82,7 @@ async fn new_upload(admin: axum::Extension<Admin>) -> Result<impl IntoResponse, 
         space_quota: ByteCount(1_000_000_000),
     };
 
-    let new_token = admin.new_upload_token(token_config).map_err(|err| {
+    let new_token = admin.new_upload_token(token_config).await.map_err(|err| {
         tracing::error!("Failed to create upload token: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
