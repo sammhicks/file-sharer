@@ -6,6 +6,21 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Sharer - Admin</title>
+
+    <style>
+        body {
+            display: flex;
+            flex-flow: column nowrap;
+            align-items: center;
+        }
+
+        #uploadForm>fieldset {
+            display: grid;
+            grid-template-columns: auto auto;
+            grid-column-gap: 1em;
+            grid-row-gap: 0.5em;
+        }
+    </style>
 </head>
 
 <body>
@@ -17,9 +32,27 @@
     </form>
 
     <h2>Upload</h2>
-    <form action="upload" method="post">
-        <input type="submit" value="Generate Upload Token">
+
+    <ul>
+        {% for listing in uploads %}
+        <li><a href="upload/{{listing.token}}">{{listing.name}}</a></li>
+        {% endfor %}
+    </ul>
+
+    <form id="uploadForm" action="upload/" method="post">
+        <fieldset>
+            <legend>New Upload</legend>
+            <label>Name</label>
+            <input name="name" value="{{new_upload.name}}">
+            <label>Expiry</label>
+            <input name="expiry" type="datetime-local" value="{{new_upload.expiry_html_localtime()}}">
+            <label>Space Quota</label>
+            <input name="spaceQuota" type="number" value="{{new_upload.space_quota}}">
+            <span></span>
+            <input type="submit" value="Generate Upload Token">
+        </fieldset>
     </form>
+
 </body>
 
 </html>

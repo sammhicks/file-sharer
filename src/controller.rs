@@ -15,6 +15,8 @@ const UPLOADS_DIRECTORY: &str = "uploads";
 const FILES_DIRECTORY: &str = "files";
 const TOKEN_FILENAME: &str = "token.toml";
 
+pub type Timestamp = chrono::DateTime<chrono::Local>;
+
 fn assert_crypto_secure<R: rand::CryptoRng>(r: R) -> R {
     r
 }
@@ -42,7 +44,7 @@ fn create_directory<P: AsRef<Path>>(path: P) -> Result<P> {
     Ok(path)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Token(String);
 
 impl Token {
@@ -97,6 +99,12 @@ impl ByteCount {
 
     fn saturating_sub(self, rhs: ByteCount) -> Self {
         Self(self.0.saturating_sub(rhs.0))
+    }
+}
+
+impl fmt::Display for ByteCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -220,12 +228,13 @@ impl<'a> Drop for NewFile<'a> {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShareConfig {
-    pub expiry: chrono::DateTime<chrono::Local>,
+    pub expiry: Timestamp,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UploadConfig {
-    pub expiry: chrono::DateTime<chrono::Local>,
+    pub name: String,
+    pub expiry: Timestamp,
     pub space_quota: ByteCount,
 }
 
@@ -251,14 +260,8 @@ impl TokenConfigMutexCore {
         Self::save_config(path, config)
     }
 
-    fn with_token_config<C: serde::de::DeserializeOwned, T, F: FnOnce(&C) -> Result<T>>(
-        &mut self,
-        path: &Path,
-        f: F,
-    ) -> Result<T> {
-        let config = Self::load_config(path)?;
-
-        f(&config)
+    fn token_config<C: serde::de::DeserializeOwned>(&mut self, path: &Path) -> Result<C> {
+        Self::load_config(path)
     }
 
     fn with_token_config_mut<
@@ -304,11 +307,11 @@ impl<'a, C: serde::Serialize + serde::de::DeserializeOwned, P: AsRef<Path>> Toke
             .create_token_config(self.path.as_ref(), config)
     }
 
-    async fn with_token_config<T, F: FnOnce(&C) -> Result<T>>(&self, f: F) -> Result<T> {
+    async fn token_config(&self) -> Result<C> {
         self.token_config_mutex
             .lock()
             .await
-            .with_token_config(self.path.as_ref(), f)
+            .token_config(self.path.as_ref())
     }
 
     async fn with_token_config_mut<T, F: FnOnce(&mut C) -> Result<T>>(&self, f: F) -> Result<T> {
@@ -372,6 +375,11 @@ impl fmt::Display for Filename {
     }
 }
 
+pub struct UploadListing {
+    pub name: String,
+    pub token: Token,
+}
+
 #[derive(askama::Template)]
 #[template(path = "user_share_directory_listing.html")]
 struct ShareDirectoryListing {
@@ -403,16 +411,14 @@ impl Admin {
     pub async fn share_files(&self, token: Token, files: Multipart) -> Result<()> {
         let token_directory = Path::new(SHARES_DIRECTORY).join(token.as_str());
 
-        let token_config = TokenConfig::new(
+        let token_config = TokenConfig::<ShareConfig, _>::new(
             token_directory.join(TOKEN_FILENAME),
             &self.controller.token_config_mutex,
-        );
+        )
+        .token_config()
+        .await?;
 
-        if chrono::Local::now()
-            > token_config
-                .with_token_config(|config: &ShareConfig| Ok(config.expiry))
-                .await?
-        {
+        if chrono::Local::now() > token_config.expiry {
             anyhow::bail!("Token has expired");
         }
 
@@ -426,8 +432,44 @@ impl Admin {
         .await
     }
 
+    pub async fn current_uploads(&self) -> Result<Vec<UploadListing>> {
+        let uploads_directory = Path::new(UPLOADS_DIRECTORY);
+
+        let mut upload_listings = Vec::new();
+
+        for entry in std::fs::read_dir(uploads_directory)
+            .with_context(|| format!("Failed to read {}", uploads_directory.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("Failed to read entry in {}", uploads_directory.display())
+            })?;
+            let name = TokenConfig::<UploadConfig, _>::new(
+                entry.path().join(TOKEN_FILENAME),
+                &self.controller.token_config_mutex,
+            )
+            .token_config()
+            .await?
+            .name;
+            let token = Token(entry.file_name().to_string_lossy().into_owned());
+
+            upload_listings.push(UploadListing { name, token });
+        }
+
+        upload_listings.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(upload_listings)
+    }
+
     pub async fn new_upload_token(&self, config: UploadConfig) -> Result<Token> {
         let token = Token::new();
+
+        let name = if config.name.is_empty() {
+            token.0.clone()
+        } else {
+            config.name
+        };
+
+        let config = UploadConfig { name, ..config };
 
         let token_directory = create_directory(Path::new(UPLOADS_DIRECTORY).join(token.as_str()))?;
 
@@ -440,6 +482,17 @@ impl Admin {
         .await?;
 
         Ok(token)
+    }
+
+    pub async fn current_upload_config(&self, token: &Token) -> Result<UploadConfig> {
+        TokenConfig::new(
+            Path::new(UPLOADS_DIRECTORY)
+                .join(token.as_str())
+                .join(TOKEN_FILENAME),
+            &self.controller.token_config_mutex,
+        )
+        .token_config()
+        .await
     }
 }
 

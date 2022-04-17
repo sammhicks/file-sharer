@@ -16,7 +16,7 @@
 
             navigator.clipboard.writeText(upload.value);
 
-            document.getElementById("copied").style = "";
+            document.getElementById("copyToClipboard").innerText = "Copied!";
         }
     </script>
 </head>
@@ -24,9 +24,17 @@
 <body>
     <h1>File Sharer - Admin</h1>
 
+    <h2>Upload - {{name}}</h2>
+
+    <dl>
+        <dt>Expiry</dt>
+        <dd>{{expiry}}</dd>
+        <dt>Space Quota</dt>
+        <dd>{{space_quota}}</dd>
+    </dl>
+
     <input id="upload" type="text" value="{{upload_url}}">
-    <button type="button" onclick="copyUploadToClipboard()">Copy to Clipboard</button>
-    <span id="copied" style="display: none;">Copied!</span>
+    <button type="button" onclick="copyUploadToClipboard()" id="copyToClipboard">Copy to Clipboard</button>
 </body>
 
 </html>
