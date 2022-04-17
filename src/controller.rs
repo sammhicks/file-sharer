@@ -10,8 +10,8 @@ use axum::extract::Multipart;
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
-const SHARES_DIRECTORY: &str = "shares";
-const UPLOADS_DIRECTORY: &str = "uploads";
+use crate::AppConfig;
+
 const FILES_DIRECTORY: &str = "files";
 const TOKEN_FILENAME: &str = "token.toml";
 
@@ -323,6 +323,7 @@ impl<'a, C: serde::Serialize + serde::de::DeserializeOwned, P: AsRef<Path>> Toke
 }
 
 struct Controller {
+    config: AppConfig,
     token_config_mutex: TokenConfigMutex,
 }
 
@@ -392,14 +393,19 @@ pub struct Admin {
 }
 
 impl Admin {
+    pub fn config(&self) -> &AppConfig {
+        &self.controller.config
+    }
+
     pub async fn new_share_token(&self, config: ShareConfig) -> Result<Token> {
         let token = Token::new();
 
-        let token_directory = create_directory(Path::new(SHARES_DIRECTORY).join(token.as_str()))?;
+        let shares_directory =
+            create_directory(self.config().shares_directory().join(token.as_str()))?;
 
-        create_directory(token_directory.join(FILES_DIRECTORY))?;
+        create_directory(shares_directory.join(FILES_DIRECTORY))?;
         TokenConfig::new(
-            token_directory.join(TOKEN_FILENAME),
+            shares_directory.join(TOKEN_FILENAME),
             &self.controller.token_config_mutex,
         )
         .create_token_config(&config)
@@ -409,10 +415,10 @@ impl Admin {
     }
 
     pub async fn share_files(&self, token: Token, files: Multipart) -> Result<()> {
-        let token_directory = Path::new(SHARES_DIRECTORY).join(token.as_str());
+        let shares_directory = self.config().shares_directory().join(token.as_str());
 
         let token_config = TokenConfig::<ShareConfig, _>::new(
-            token_directory.join(TOKEN_FILENAME),
+            shares_directory.join(TOKEN_FILENAME),
             &self.controller.token_config_mutex,
         )
         .token_config()
@@ -425,7 +431,7 @@ impl Admin {
         let mut actual_file_size = ByteCount(0);
 
         NewFile::from_multipart(
-            token_directory.join(FILES_DIRECTORY),
+            shares_directory.join(FILES_DIRECTORY),
             files,
             &mut actual_file_size,
         )
@@ -433,11 +439,11 @@ impl Admin {
     }
 
     pub async fn current_uploads(&self) -> Result<Vec<UploadListing>> {
-        let uploads_directory = Path::new(UPLOADS_DIRECTORY);
+        let uploads_directory = self.config().uploads_directory();
 
         let mut upload_listings = Vec::new();
 
-        for entry in std::fs::read_dir(uploads_directory)
+        for entry in std::fs::read_dir(&uploads_directory)
             .with_context(|| format!("Failed to read {}", uploads_directory.display()))?
         {
             let entry = entry.with_context(|| {
@@ -471,7 +477,8 @@ impl Admin {
 
         let config = UploadConfig { name, ..config };
 
-        let token_directory = create_directory(Path::new(UPLOADS_DIRECTORY).join(token.as_str()))?;
+        let token_directory =
+            create_directory(self.config().uploads_directory().join(token.as_str()))?;
 
         create_directory(token_directory.join(FILES_DIRECTORY))?;
         TokenConfig::new(
@@ -486,7 +493,8 @@ impl Admin {
 
     pub async fn current_upload_config(&self, token: &Token) -> Result<UploadConfig> {
         TokenConfig::new(
-            Path::new(UPLOADS_DIRECTORY)
+            self.config()
+                .uploads_directory()
                 .join(token.as_str())
                 .join(TOKEN_FILENAME),
             &self.controller.token_config_mutex,
@@ -502,6 +510,10 @@ pub struct User {
 }
 
 impl User {
+    pub fn config(&self) -> &AppConfig {
+        &self.controller.config
+    }
+
     pub async fn upload_files(
         &self,
         token: Token,
@@ -514,7 +526,7 @@ impl User {
                 .context("File upload is too large")?,
         );
 
-        let token_directory = Path::new(UPLOADS_DIRECTORY).join(token.as_str());
+        let token_directory = self.config().uploads_directory().join(token.as_str());
 
         let token_config = TokenConfig::new(
             token_directory.join(TOKEN_FILENAME),
@@ -558,7 +570,9 @@ impl User {
     pub async fn directory_listing(&self, token: Token) -> Result<String> {
         use askama::Template;
 
-        let path = Path::new(SHARES_DIRECTORY)
+        let path = self
+            .config()
+            .shares_directory()
             .join(token.as_str())
             .join(FILES_DIRECTORY);
 
@@ -582,7 +596,9 @@ impl User {
         token: Token,
         filename: Filename,
     ) -> Result<(tokio::fs::File, std::fs::Metadata, mime_guess::Mime)> {
-        let path = Path::new(SHARES_DIRECTORY)
+        let path = self
+            .config()
+            .shares_directory()
             .join(token.as_str())
             .join(FILES_DIRECTORY)
             .join(filename);
@@ -602,8 +618,9 @@ impl User {
     }
 }
 
-pub fn new_controller() -> (Admin, User) {
+pub fn new_controller(config: AppConfig) -> (Admin, User) {
     let controller = Arc::new(Controller {
+        config,
         token_config_mutex: TokenConfigMutex::new(TokenConfigMutexCore),
     });
 

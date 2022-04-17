@@ -103,14 +103,21 @@ async fn share_file(
 }
 
 pub async fn run(user: User, shutdown_signal: impl Future<Output = ()>) {
+    let addr = SocketAddr::from((
+        if user.config().user_localhost_only {
+            Ipv4Addr::LOCALHOST
+        } else {
+            Ipv4Addr::UNSPECIFIED
+        },
+        user.config().user_port,
+    ));
+
     let app = Router::new()
         .typed_get(upload_files_page)
         .typed_post(upload_files)
         .typed_get(share_file)
         .typed_get(directory_listing)
         .layer(axum::Extension(user));
-
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 8080));
 
     tracing::info!("User App is listening on {addr}");
 

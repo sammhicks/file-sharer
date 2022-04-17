@@ -188,6 +188,14 @@ async fn new_upload(
 }
 
 pub async fn run(admin: Admin, shutdown_signal: impl Future<Output = ()>) {
+    if admin.config().disable_admin_app {
+        shutdown_signal.await;
+
+        return;
+    }
+
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, admin.config().admin_port));
+
     let app = Router::new()
         .route("/", get(home_page))
         .route("/share", post(new_share))
@@ -195,8 +203,6 @@ pub async fn run(admin: Admin, shutdown_signal: impl Future<Output = ()>) {
         .typed_get(current_upload)
         .route("/upload/", post(new_upload))
         .layer(axum::Extension(admin));
-
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 8000));
 
     tracing::info!("Admin App is listening on {addr}");
 
