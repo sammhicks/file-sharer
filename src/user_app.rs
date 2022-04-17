@@ -50,7 +50,7 @@ async fn directory_listing(
 ) -> Result<impl IntoResponse, StatusCode> {
     user.directory_listing(token)
         .await
-        .map(axum::response::Html)
+        .map(|listing| listing.into_response())
         .map_err(|err| {
             tracing::error!("{:#}", err);
 

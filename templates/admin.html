@@ -14,7 +14,7 @@
             align-items: center;
         }
 
-        #uploadForm>fieldset {
+        fieldset {
             display: grid;
             grid-template-columns: auto auto;
             grid-column-gap: 1em;
@@ -27,8 +27,23 @@
     <h1>File Sharer - Admin</h1>
 
     <h2>Share</h2>
-    <form action="share" method="post">
-        <input type="submit" value="Generate Share Token">
+
+    <ul>
+        {% for listing in shares %}
+        <li><a href="share/{{listing.token}}">{{listing.name}}</a></li>
+        {% endfor %}
+    </ul>
+
+    <form action="share/" method="post">
+        <fieldset>
+            <legend>New Share</legend>
+            <label>Name</label>
+            <input name="name" value="{{new_share.name}}">
+            <label>Expiry</label>
+            <input name="expiry" type="datetime-local" value="{{new_share.expiry()}}">
+            <span></span>
+            <input type="submit" value="Generate Share Token">
+        </fieldset>
     </form>
 
     <h2>Upload</h2>
@@ -39,13 +54,13 @@
         {% endfor %}
     </ul>
 
-    <form id="uploadForm" action="upload/" method="post">
+    <form action="upload/" method="post">
         <fieldset>
             <legend>New Upload</legend>
             <label>Name</label>
             <input name="name" value="{{new_upload.name}}">
             <label>Expiry</label>
-            <input name="expiry" type="datetime-local" value="{{new_upload.expiry_html_localtime()}}">
+            <input name="expiry" type="datetime-local" value="{{new_upload.expiry()}}">
             <label>Space Quota</label>
             <input name="spaceQuota" type="number" value="{{new_upload.space_quota}}">
             <span></span>

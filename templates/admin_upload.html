@@ -8,7 +8,7 @@
     <title>File Sharer - Admin</title>
 
     <script>
-        function copyUploadToClipboard() {
+        function copyUrlToClipboard() {
             var upload = document.getElementById("upload");
 
             upload.select();
@@ -24,17 +24,19 @@
 <body>
     <h1>File Sharer - Admin</h1>
 
+    <a href="../..">Back</a>
+
     <h2>Upload - {{name}}</h2>
 
     <dl>
         <dt>Expiry</dt>
-        <dd>{{expiry}}</dd>
+        <dd>{{self.expiry()}}</dd>
         <dt>Space Quota</dt>
         <dd>{{space_quota}}</dd>
     </dl>
 
     <input id="upload" type="text" value="{{upload_url}}">
-    <button type="button" onclick="copyUploadToClipboard()" id="copyToClipboard">Copy to Clipboard</button>
+    <button type="button" onclick="copyUrlToClipboard()" id="copyToClipboard">Copy to Clipboard</button>
 </body>
 
 </html>

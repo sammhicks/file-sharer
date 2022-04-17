@@ -14,12 +14,35 @@ use axum::{
 use axum_extra::routing::{RouterExt, TypedPath};
 
 use crate::controller::{
-    Admin, ByteCount, ShareConfig, Timestamp, Token, UploadConfig, UploadListing,
+    Admin, ByteCount, ShareConfig, ShareListing, Timestamp, Token, UploadConfig, UploadListing,
 };
+
+mod html_localtime {
+    use crate::controller::Timestamp;
+
+    const FORMAT: &str = "%FT%H:%M";
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Timestamp, D::Error> {
+        use chrono::TimeZone;
+        use serde::Deserialize;
+
+        chrono::Local
+            .datetime_from_str(&String::deserialize(deserializer)?, FORMAT)
+            .map_err(serde::de::Error::custom)
+    }
+
+    pub fn serialize(timestamp: &Timestamp) -> impl std::fmt::Display {
+        timestamp.format(FORMAT)
+    }
+}
 
 #[derive(askama::Template)]
 #[template(path = "admin.html")]
 struct HomePage {
+    shares: Vec<ShareListing>,
+    new_share: NewShare,
     uploads: Vec<UploadListing>,
     new_upload: NewUpload,
 }
@@ -27,6 +50,17 @@ struct HomePage {
 async fn home_page(
     admin: axum::extract::Extension<Admin>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let shares = admin.current_shares().await.map_err(|err| {
+        tracing::error!("Failed to get current shares: {err:#}");
+
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let new_share = NewShare {
+        name: String::new(),
+        expiry: chrono::Local::now() + chrono::Duration::days(1),
+    };
+
     let uploads = admin.current_uploads().await.map_err(|err| {
         tracing::error!("Failed to get current uploads: {err:#}");
 
@@ -40,36 +74,81 @@ async fn home_page(
     };
 
     Ok(HomePage {
+        shares,
+        new_share,
         uploads,
         new_upload,
     }
     .into_response())
 }
 
+#[derive(TypedPath, serde::Deserialize)]
+#[typed_path("/share/:token")]
+struct SharePagePath {
+    token: Token,
+}
+
 #[derive(askama::Template)]
 #[template(path = "admin_share.html")]
 struct SharePage {
+    name: String,
+    expiry: Timestamp,
     upload_url: String,
-    upload_token: Token,
 }
 
-async fn new_share(admin: axum::Extension<Admin>) -> Result<impl IntoResponse, StatusCode> {
-    let token_config = ShareConfig {
-        expiry: chrono::Local::now() + chrono::Duration::hours(1),
-    };
+impl SharePage {
+    fn expiry(&self) -> impl std::fmt::Display {
+        html_localtime::serialize(&self.expiry)
+    }
+}
 
-    let new_token = admin.new_share_token(token_config).await.map_err(|err| {
-        tracing::error!("Failed to create share token: {err}");
-        StatusCode::INTERNAL_SERVER_ERROR
+async fn current_share(
+    SharePagePath { token }: SharePagePath,
+    admin: axum::Extension<Admin>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let ShareConfig { name, expiry } = admin.current_share_config(&token).await.map_err(|err| {
+        tracing::error!("{err:#}");
+
+        StatusCode::NOT_FOUND
     })?;
 
-    let url = format!("http://127.0.0.1:8080/share/{new_token}");
+    let url = format!("http://127.0.0.1:8080/share/{token}");
 
     Ok(SharePage {
+        name,
+        expiry,
         upload_url: url,
-        upload_token: new_token,
     }
     .into_response())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewShare {
+    name: String,
+    #[serde(with = "html_localtime")]
+    expiry: Timestamp,
+}
+
+impl NewShare {
+    fn expiry(&self) -> impl std::fmt::Display {
+        html_localtime::serialize(&self.expiry)
+    }
+}
+
+async fn new_share(
+    Form(NewShare { name, expiry }): Form<NewShare>,
+    admin: axum::Extension<Admin>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let new_token = admin
+        .new_share_token(ShareConfig { name, expiry })
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to create share token: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(axum::response::Redirect::to(new_token.as_str()))
 }
 
 #[derive(TypedPath, serde::Deserialize)]
@@ -108,6 +187,12 @@ struct UploadPage {
     upload_url: String,
 }
 
+impl UploadPage {
+    fn expiry(&self) -> impl std::fmt::Display {
+        html_localtime::serialize(&self.expiry)
+    }
+}
+
 async fn current_upload(
     UploadPagePath { token }: UploadPagePath,
     admin: axum::Extension<Admin>,
@@ -133,34 +218,18 @@ async fn current_upload(
     .into_response())
 }
 
-pub fn html_localtime<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Timestamp, D::Error> {
-    use chrono::TimeZone;
-    use serde::Deserialize;
-
-    chrono::Local
-        .datetime_from_str(
-            &String::deserialize(deserializer)?,
-            NewUpload::HTML_LOCALTIME,
-        )
-        .map_err(serde::de::Error::custom)
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewUpload {
     name: String,
-    #[serde(deserialize_with = "html_localtime")]
+    #[serde(with = "html_localtime")]
     expiry: Timestamp,
     space_quota: ByteCount,
 }
 
 impl NewUpload {
-    const HTML_LOCALTIME: &'static str = "%FT%H:%M";
-
-    fn expiry_html_localtime(&self) -> impl std::fmt::Display {
-        self.expiry.format(Self::HTML_LOCALTIME)
+    fn expiry(&self) -> impl std::fmt::Display {
+        html_localtime::serialize(&self.expiry)
     }
 }
 
@@ -198,7 +267,8 @@ pub async fn run(admin: Admin, shutdown_signal: impl Future<Output = ()>) {
 
     let app = Router::new()
         .route("/", get(home_page))
-        .route("/share", post(new_share))
+        .typed_get(current_share)
+        .route("/share/", post(new_share))
         .typed_post(share_files)
         .typed_get(current_upload)
         .route("/upload/", post(new_upload))

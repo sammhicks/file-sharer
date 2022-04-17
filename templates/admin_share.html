@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="https://unpkg.com/dropzone@5/dist/min/dropzone.min.css" type="text/css" />
 
     <script>
-        function copyUploadToClipboard() {
+        function copyUrlToClipboard() {
             var upload = document.getElementById("upload");
 
             upload.select();
@@ -19,7 +19,7 @@
 
             navigator.clipboard.writeText(upload.value);
 
-            document.getElementById("copied").style = "";
+            document.getElementById("copyToClipboard").innerText = "Copied!";
         }
     </script>
 </head>
@@ -27,11 +27,21 @@
 <body>
     <h1>File Sharer - Admin</h1>
 
-    <input id="upload" type="text" value="{{upload_url}}">
-    <button type="button" onclick="copyUploadToClipboard()">Copy to Clipboard</button>
-    <span id="copied" style="display: none;">Copied!</span>
+    <a href="../..">Back</a>
 
-    <form action="share/{{upload_token}}" method="post" enctype="multipart/form-data" class="dropzone">
+    <h2>Share - {{name}}</h2>
+
+    <dl>
+        <dt>Expiry</dt>
+        <dd>{{self.expiry()}}</dd>
+    </dl>
+
+    <input id="upload" type="text" value="{{upload_url}}">
+    <button type="button" onclick="copyUrlToClipboard()" id="copyToClipboard">Copy to Clipboard</button>
+
+    <h3>Upload Files</h3>
+
+    <form action="#" method="post" enctype="multipart/form-data" class="dropzone">
         <input type="file" id="file" name="file" multiple>
         <input type="submit">
     </form>
