@@ -9,6 +9,8 @@ mod controller;
 mod user_app;
 
 #[derive(Debug, clap::Parser)]
+#[clap(name = "File Sharer")]
+/// Easily share and upload files, protected by access tokens
 pub struct AppConfig {
     #[clap(long, default_value = ".")]
     /// Where to store files
@@ -31,8 +33,9 @@ pub struct AppConfig {
     #[clap(long, default_value = "http://localhost:8080")]
     user_root: Uri,
 
-    #[clap(long)]
-    /// The port to listen on for the user app. If not specified, uses port specified by --user-root
+    #[clap(long, short = 'p')]
+    /// The port to listen on for the user app.
+    /// If not specified, uses port specified by --user-root
     user_port: Option<u16>,
 
     #[clap(long)]
@@ -40,7 +43,7 @@ pub struct AppConfig {
     user_localhost_only: bool,
 
     #[clap(long)]
-    /// Silence the warning when --user-port differs from the port specified in --user-roor
+    /// Silence the warning when --user-port differs from the port specified in --user-root
     silence_different_port_warning: bool,
 }
 
