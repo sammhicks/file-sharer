@@ -40,7 +40,7 @@
             <label>Name</label>
             <input name="name" value="{{new_share.name}}">
             <label>Expiry</label>
-            <input name="expiry" type="datetime-local" value="{{new_share.expiry()}}">
+            <input name="expiry" type="datetime-local" value="{{new_share.expiry}}">
             <span></span>
             <input type="submit" value="Generate Share Token">
         </fieldset>
@@ -60,7 +60,7 @@
             <label>Name</label>
             <input name="name" value="{{new_upload.name}}">
             <label>Expiry</label>
-            <input name="expiry" type="datetime-local" value="{{new_upload.expiry()}}">
+            <input name="expiry" type="datetime-local" value="{{new_upload.expiry}}">
             <label>Space Quota</label>
             <input name="spaceQuota" type="number" value="{{new_upload.space_quota}}">
             <span></span>

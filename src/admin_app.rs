@@ -17,27 +17,6 @@ use crate::controller::{
     Admin, ByteCount, ShareConfig, ShareListing, Timestamp, Token, UploadConfig, UploadListing,
 };
 
-mod html_localtime {
-    use crate::controller::Timestamp;
-
-    const FORMAT: &str = "%FT%H:%M";
-
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Timestamp, D::Error> {
-        use chrono::TimeZone;
-        use serde::Deserialize;
-
-        chrono::Local
-            .datetime_from_str(&String::deserialize(deserializer)?, FORMAT)
-            .map_err(serde::de::Error::custom)
-    }
-
-    pub fn serialize(timestamp: &Timestamp) -> impl std::fmt::Display {
-        timestamp.format(FORMAT)
-    }
-}
-
 #[derive(askama::Template)]
 #[template(path = "admin.html")]
 struct HomePage {
@@ -58,7 +37,7 @@ async fn home_page(
 
     let new_share = NewShare {
         name: String::new(),
-        expiry: chrono::Local::now() + chrono::Duration::days(1),
+        expiry: Timestamp::now() + chrono::Duration::days(1),
     };
 
     let uploads = admin.current_uploads().await.map_err(|err| {
@@ -69,7 +48,7 @@ async fn home_page(
 
     let new_upload = NewUpload {
         name: String::new(),
-        expiry: chrono::Local::now() + chrono::Duration::days(1),
+        expiry: Timestamp::now() + chrono::Duration::days(1),
         space_quota: ByteCount(1_000_000_000),
     };
 
@@ -96,12 +75,6 @@ struct SharePage {
     upload_url: String,
 }
 
-impl SharePage {
-    fn expiry(&self) -> impl std::fmt::Display {
-        html_localtime::serialize(&self.expiry)
-    }
-}
-
 async fn current_share(
     SharePagePath { token }: SharePagePath,
     admin: axum::Extension<Admin>,
@@ -112,7 +85,9 @@ async fn current_share(
         StatusCode::NOT_FOUND
     })?;
 
-    let url = format!("http://127.0.0.1:8080/share/{token}");
+    let user_port = admin.config().user_port;
+
+    let url = format!("http://127.0.0.1:{user_port}/share/{token}");
 
     Ok(SharePage {
         name,
@@ -126,14 +101,7 @@ async fn current_share(
 #[serde(rename_all = "camelCase")]
 struct NewShare {
     name: String,
-    #[serde(with = "html_localtime")]
     expiry: Timestamp,
-}
-
-impl NewShare {
-    fn expiry(&self) -> impl std::fmt::Display {
-        html_localtime::serialize(&self.expiry)
-    }
 }
 
 async fn new_share(
@@ -144,7 +112,7 @@ async fn new_share(
         .new_share_token(ShareConfig { name, expiry })
         .await
         .map_err(|err| {
-            tracing::error!("Failed to create share token: {err}");
+            tracing::error!("Failed to create share token: {err:#}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -167,7 +135,7 @@ async fn share_files(
         .await
         .map(|()| "SUCCESS")
         .map_err(|err| {
-            tracing::error!("Failed to share files: {err}");
+            tracing::error!("Failed to share files: {err:#}");
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
@@ -187,12 +155,6 @@ struct UploadPage {
     upload_url: String,
 }
 
-impl UploadPage {
-    fn expiry(&self) -> impl std::fmt::Display {
-        html_localtime::serialize(&self.expiry)
-    }
-}
-
 async fn current_upload(
     UploadPagePath { token }: UploadPagePath,
     admin: axum::Extension<Admin>,
@@ -207,7 +169,9 @@ async fn current_upload(
         StatusCode::NOT_FOUND
     })?;
 
-    let url = format!("http://127.0.0.1:8080/upload/{token}");
+    let user_port = admin.config().user_port;
+
+    let url = format!("http://127.0.0.1:{user_port}/upload/{token}");
 
     Ok(UploadPage {
         name,
@@ -222,15 +186,8 @@ async fn current_upload(
 #[serde(rename_all = "camelCase")]
 struct NewUpload {
     name: String,
-    #[serde(with = "html_localtime")]
     expiry: Timestamp,
     space_quota: ByteCount,
-}
-
-impl NewUpload {
-    fn expiry(&self) -> impl std::fmt::Display {
-        html_localtime::serialize(&self.expiry)
-    }
 }
 
 async fn new_upload(

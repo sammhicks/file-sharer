@@ -15,8 +15,6 @@ use crate::AppConfig;
 const FILES_DIRECTORY: &str = "files";
 const TOKEN_FILENAME: &str = "token.toml";
 
-pub type Timestamp = chrono::DateTime<chrono::Local>;
-
 fn assert_crypto_secure<R: rand::CryptoRng>(r: R) -> R {
     r
 }
@@ -44,6 +42,49 @@ fn create_directory<P: AsRef<Path>>(path: P) -> Result<P> {
     Ok(path)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Timestamp(chrono::NaiveDateTime);
+
+impl Timestamp {
+    pub fn now() -> Self {
+        Self(chrono::Local::now().naive_local())
+    }
+
+    const FORMAT: &'static str = "%FT%H:%M";
+
+    fn format_filename(&self) -> impl fmt::Display {
+        self.0.format("%Y%m%dT%H%M%S")
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.format(Self::FORMAT).fmt(f)
+    }
+}
+
+impl serde::Serialize for Timestamp {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Timestamp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        chrono::NaiveDateTime::parse_from_str(&String::deserialize(deserializer)?, Self::FORMAT)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl std::ops::Add<chrono::Duration> for Timestamp {
+    type Output = Self;
+
+    fn add(self, rhs: chrono::Duration) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Token(String);
 
@@ -53,11 +94,9 @@ impl Token {
 
         let mut rng = assert_crypto_secure(rand::thread_rng());
 
-        let now = chrono::offset::Local::now().format("%Y%m%dT%H%M%S");
-
         Self(format!(
             "{}_{:016X}{:016X}",
-            now,
+            Timestamp::now().format_filename(),
             rng.gen::<u64>(),
             rng.gen::<u64>()
         ))
@@ -230,7 +269,7 @@ trait IsTokenConfig: serde::Serialize + serde::de::DeserializeOwned {
     fn storage_directory(config: &AppConfig) -> PathBuf;
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ShareConfig {
     pub name: String,
     pub expiry: Timestamp,
@@ -242,7 +281,7 @@ impl IsTokenConfig for ShareConfig {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct UploadConfig {
     pub name: String,
     pub expiry: Timestamp,
@@ -469,12 +508,19 @@ impl Admin {
                 format!("Failed to read entry in {}", shares_directory.display())
             })?;
             let token = Token(entry.file_name().to_string_lossy().into_owned());
-            let name = self
+
+            let name = match self
                 .controller
                 .get_token_config::<ShareConfig>(&token)
                 .load()
-                .await?
-                .name;
+                .await
+            {
+                Ok(token) => token.name,
+                Err(err) => {
+                    tracing::warn!("{err:#}");
+                    continue;
+                }
+            };
 
             share_listings.push(ShareListing { name, token });
         }
@@ -502,7 +548,7 @@ impl Admin {
     pub async fn share_files(&self, token: Token, files: Multipart) -> Result<()> {
         let token_config = self.controller.get_share_config(&token);
 
-        if chrono::Local::now() > token_config.load().await?.expiry {
+        if Timestamp::now() > token_config.load().await?.expiry {
             anyhow::bail!("Token has expired");
         }
 
@@ -523,12 +569,18 @@ impl Admin {
                 format!("Failed to read entry in {}", uploads_directory.display())
             })?;
             let token = Token(entry.file_name().to_string_lossy().into_owned());
-            let name = self
+            let name = match self
                 .controller
                 .get_token_config::<UploadConfig>(&token)
                 .load()
-                .await?
-                .name;
+                .await
+            {
+                Ok(token) => token.name,
+                Err(err) => {
+                    tracing::warn!("{err:#}");
+                    continue;
+                }
+            };
 
             upload_listings.push(UploadListing { name, token });
         }
@@ -588,7 +640,7 @@ impl User {
 
         token_config
             .update(|token_config| {
-                if chrono::Local::now() > token_config.expiry {
+                if Timestamp::now() > token_config.expiry {
                     anyhow::bail!("Token has expired");
                 }
 
