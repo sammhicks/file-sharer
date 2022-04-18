@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use axum::http::Uri;
 use clap::StructOpt;
 use futures_util::FutureExt;
 
@@ -27,13 +28,20 @@ pub struct AppConfig {
     /// The port to listen on for the admin app
     admin_port: u16,
 
-    #[clap(long, default_value = "8080")]
-    /// The port to listen on for the user app
-    user_port: u16,
+    #[clap(long, default_value = "http://localhost:8080")]
+    user_root: Uri,
+
+    #[clap(long)]
+    /// The port to listen on for the user app. If not specified, uses port specified by --user-root
+    user_port: Option<u16>,
 
     #[clap(long)]
     /// Bind the user app to localhost only (useful for dev)
     user_localhost_only: bool,
+
+    #[clap(long)]
+    /// Silence the warning when --user-port differs from the port specified in --user-roor
+    silence_different_port_warning: bool,
 }
 
 impl AppConfig {
@@ -44,6 +52,16 @@ impl AppConfig {
     fn uploads_directory(&self) -> PathBuf {
         self.files.join(&self.uploads)
     }
+
+    fn user_port(&self) -> u16 {
+        self.user_port
+            .or_else(|| self.user_root.port_u16())
+            .unwrap_or(if let Some("https") = self.user_root.scheme_str() {
+                443
+            } else {
+                80
+            })
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -53,6 +71,16 @@ async fn main() {
     let config = AppConfig::parse();
 
     tracing::info!(?config);
+
+    if !config.silence_different_port_warning {
+        if let (Some(user_root_port), Some(user_port)) =
+            (config.user_root.port_u16(), config.user_port)
+        {
+            if user_root_port != user_port {
+                tracing::warn!("Port specified by --user-root ({user_root_port}) and port specified by --user_port ({user_port}) do not match. If this is intentional, pass the parameter --silence-different-port-warning");
+            }
+        }
+    }
 
     let (shutdown_handle, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
     let shutdown_signal = shutdown_signal.map(|_| ()).shared();

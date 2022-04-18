@@ -85,9 +85,8 @@ async fn current_share(
         StatusCode::NOT_FOUND
     })?;
 
-    let user_port = admin.config().user_port;
-
-    let url = format!("http://127.0.0.1:{user_port}/share/{token}");
+    let user_root = &admin.config().user_root;
+    let url = format!("{user_root}/share/{token}");
 
     Ok(SharePage {
         name,
@@ -169,9 +168,8 @@ async fn current_upload(
         StatusCode::NOT_FOUND
     })?;
 
-    let user_port = admin.config().user_port;
-
-    let url = format!("http://127.0.0.1:{user_port}/upload/{token}");
+    let user_root = &admin.config().user_root;
+    let url = format!("{user_root}/upload/{token}");
 
     Ok(UploadPage {
         name,
