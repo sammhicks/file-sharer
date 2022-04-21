@@ -85,13 +85,12 @@ async fn current_share(
         StatusCode::NOT_FOUND
     })?;
 
-    let user_root = &admin.config().user_root;
-    let url = format!("{user_root}/share/{token}");
+    let upload_url = admin.config().token_url("share", &token);
 
     Ok(SharePage {
         name,
         expiry,
-        upload_url: url,
+        upload_url,
     }
     .into_response())
 }
@@ -168,14 +167,13 @@ async fn current_upload(
         StatusCode::NOT_FOUND
     })?;
 
-    let user_root = &admin.config().user_root;
-    let url = format!("{user_root}/upload/{token}");
+    let upload_url = admin.config().token_url("upload", &token);
 
     Ok(UploadPage {
         name,
         expiry,
         space_quota,
-        upload_url: url,
+        upload_url,
     }
     .into_response())
 }

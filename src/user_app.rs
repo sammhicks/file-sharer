@@ -109,10 +109,10 @@ pub async fn run(user: User, shutdown_signal: impl Future<Output = ()>) {
         } else {
             Ipv4Addr::UNSPECIFIED
         },
-        user.config().user_port(),
+        user.config().user_port,
     ));
 
-    let user_root = user.config().user_root.path().to_string();
+    let user_root = user.config().user_root.clone();
 
     let app = Router::new()
         .typed_get(upload_files_page)

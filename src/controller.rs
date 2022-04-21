@@ -129,7 +129,7 @@ impl<'de> serde::Deserialize<'de> for Token {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ByteCount(pub usize);
+pub struct ByteCount(pub u64);
 
 impl ByteCount {
     fn checked_sub(self, rhs: ByteCount) -> Option<Self> {
@@ -158,7 +158,7 @@ impl<'de> serde::Deserialize<'de> for ByteCount {
     where
         D: serde::Deserializer<'de>,
     {
-        usize::deserialize(deserializer).map(Self)
+        u64::deserialize(deserializer).map(Self)
     }
 }
 
@@ -200,7 +200,7 @@ impl<'a> NewFile<'a> {
             .await
             .with_context(|| format!("Failed to write to {}", self.filename.display()))?;
 
-        self.size.0 += data.len();
+        self.size.0 += data.len() as u64;
 
         Ok(())
     }
@@ -479,11 +479,16 @@ pub struct UploadListing {
     pub token: Token,
 }
 
+struct ShareDirectoryEntry {
+    name: String,
+    size: ByteCount,
+}
+
 #[derive(askama::Template)]
 #[template(path = "user_share_directory_listing.html")]
 pub struct ShareDirectoryListing {
     name: String,
-    files: Vec<String>,
+    files: Vec<ShareDirectoryEntry>,
 }
 
 #[derive(Clone)]
@@ -630,11 +635,7 @@ impl User {
         content_length: u64,
         files: Multipart,
     ) -> Result<()> {
-        let request_size = ByteCount(
-            content_length
-                .try_into()
-                .context("File upload is too large")?,
-        );
+        let request_size = ByteCount(content_length);
 
         let token_config = self.controller.get_token_config::<UploadConfig>(&token);
 
@@ -683,7 +684,18 @@ impl User {
                     format!("Failed to read entry in {}", files_directory.display())
                 })?;
 
-                Ok(entry.file_name().to_string_lossy().into_owned())
+                let name = entry.file_name().to_string_lossy().into_owned();
+
+                let size = ByteCount(
+                    entry
+                        .metadata()
+                        .with_context(|| {
+                            format!("Failed to read metadata for {}", entry.path().display())
+                        })?
+                        .len(),
+                );
+
+                Ok(ShareDirectoryEntry { name, size })
             })
             .collect::<Result<Vec<_>>>()?;
 

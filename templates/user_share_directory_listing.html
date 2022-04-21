@@ -10,11 +10,22 @@
 
 <body>
     <h1>{{name}}</h1>
-    <ul>
-        {% for file in files %}
-        <li><a href="{{file}}">{{file}}</a></li>
-        {% endfor %}
-    </ul>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Size</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for file in files %}
+            <tr>
+                <td><a href="{{file.name}}">{{file.name}}</a></td>
+                <td>{{file.size}}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </body>
 
 </html>

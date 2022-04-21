@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
-use axum::http::Uri;
 use clap::StructOpt;
 use futures_util::FutureExt;
 
 mod admin_app;
 mod controller;
 mod user_app;
+
+fn parse_user_root(path: &str) -> String {
+    format!("/{}", path.trim_matches('/'))
+}
 
 #[derive(Debug, clap::Parser)]
 #[clap(name = "File Sharer")]
@@ -30,21 +33,25 @@ pub struct AppConfig {
     /// The port to listen on for the admin app
     admin_port: u16,
 
-    #[clap(long, default_value = "http://localhost:8080")]
-    user_root: Uri,
+    #[clap(long)]
+    /// Redirect to the user app using https
+    user_https: bool,
 
-    #[clap(long, short = 'p')]
+    #[clap(long, default_value = "localhost:8080")]
+    /// The domain hosting the user app, possibly including the port if not default
+    user_host: String,
+
+    #[clap(long, short = 'p', default_value = "8080")]
     /// The port to listen on for the user app.
-    /// If not specified, uses port specified by --user-root
-    user_port: Option<u16>,
+    user_port: u16,
+
+    #[clap(long, default_value = "/", parse(from_str = parse_user_root))]
+    /// The root path of the user app
+    user_root: String,
 
     #[clap(long)]
     /// Bind the user app to localhost only (useful for dev)
     user_localhost_only: bool,
-
-    #[clap(long)]
-    /// Silence the warning when --user-port differs from the port specified in --user-root
-    silence_different_port_warning: bool,
 }
 
 impl AppConfig {
@@ -56,34 +63,26 @@ impl AppConfig {
         self.files.join(&self.uploads)
     }
 
-    fn user_port(&self) -> u16 {
-        self.user_port
-            .or_else(|| self.user_root.port_u16())
-            .unwrap_or(if let Some("https") = self.user_root.scheme_str() {
-                443
-            } else {
-                80
-            })
+    fn token_url(&self, category: &str, token: &controller::Token) -> String {
+        let scheme = if self.user_https { "https" } else { "http" };
+
+        let domain = &self.user_host;
+
+        let path = Some(self.user_root.as_str())
+            .filter(|&path| path != "/")
+            .unwrap_or("");
+
+        format!("{scheme}://{domain}{path}/{category}/{token}")
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let config = AppConfig::parse();
+    let config = AppConfig::try_parse()?;
 
     tracing::info!(?config);
-
-    if !config.silence_different_port_warning {
-        if let (Some(user_root_port), Some(user_port)) =
-            (config.user_root.port_u16(), config.user_port)
-        {
-            if user_root_port != user_port {
-                tracing::warn!("Port specified by --user-root ({user_root_port}) and port specified by --user_port ({user_port}) do not match. If this is intentional, pass the parameter --silence-different-port-warning");
-            }
-        }
-    }
 
     let (shutdown_handle, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
     let shutdown_signal = shutdown_signal.map(|_| ()).shared();
@@ -110,4 +109,6 @@ async fn main() {
     drop(shutdown_handle);
 
     tasks_complete_signal.recv().await;
+
+    Ok(())
 }
