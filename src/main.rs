@@ -7,10 +7,6 @@ mod admin_app;
 mod controller;
 mod user_app;
 
-fn parse_user_root(path: &str) -> String {
-    format!("/{}", path.trim_matches('/'))
-}
-
 #[derive(Debug, clap::Parser)]
 #[clap(name = "File Sharer")]
 /// Easily share and upload files, protected by access tokens
@@ -33,21 +29,15 @@ pub struct AppConfig {
     /// The port to listen on for the admin app
     admin_port: u16,
 
-    #[clap(long)]
-    /// Redirect to the user app using https
-    user_https: bool,
-
-    #[clap(long, default_value = "localhost:8080")]
-    /// The domain hosting the user app, possibly including the port if not default
-    user_host: String,
-
     #[clap(long, short = 'p', default_value = "8080")]
     /// The port to listen on for the user app.
     user_port: u16,
 
-    #[clap(long, default_value = "/", parse(from_str = parse_user_root))]
-    /// The root path of the user app
-    user_root: String,
+    #[clap(long, default_value = "http://localhost:8080")]
+    /// The URL of the root of the user app. Note that the app assumes
+    /// that it is served at "/" at the point the request reaches the app,
+    /// i.e. if behind a reverse proxy, you must rewrite URLs
+    user_url_prefix: String,
 
     #[clap(long)]
     /// Bind the user app to localhost only (useful for dev)
@@ -64,23 +54,17 @@ impl AppConfig {
     }
 
     fn token_url(&self, category: &str, token: &controller::Token) -> String {
-        let scheme = if self.user_https { "https" } else { "http" };
+        let prefix = self.user_url_prefix.trim_end_matches('/');
 
-        let domain = &self.user_host;
-
-        let path = Some(self.user_root.as_str())
-            .filter(|&path| path != "/")
-            .unwrap_or("");
-
-        format!("{scheme}://{domain}{path}/{category}/{token}")
+        format!("{prefix}/{category}/{token}")
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = AppConfig::try_parse()?;
+    let config = AppConfig::parse();
 
     tracing::info!(?config);
 
@@ -109,6 +93,4 @@ async fn main() -> anyhow::Result<()> {
     drop(shutdown_handle);
 
     tasks_complete_signal.recv().await;
-
-    Ok(())
 }

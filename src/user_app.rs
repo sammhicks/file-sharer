@@ -112,16 +112,12 @@ pub async fn run(user: User, shutdown_signal: impl Future<Output = ()>) {
         user.config().user_port,
     ));
 
-    let user_root = user.config().user_root.clone();
-
     let app = Router::new()
         .typed_get(upload_files_page)
         .typed_post(upload_files)
         .typed_get(share_file)
         .typed_get(directory_listing)
         .layer(axum::Extension(user));
-
-    let app = Router::new().nest(&user_root, app);
 
     tracing::info!("User App is listening on {addr}");
 

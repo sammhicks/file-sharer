@@ -31,14 +31,10 @@ There are two web apps:
                 Print help information
 
         -p, --user-port <USER_PORT>
-                The port to listen on for the user app. If not specified, uses port specified by --user-
-                root
+                The port to listen on for the user app [default: 8080]
 
             --shares <SHARES>
                 Where to store shares (relative to files) [default: shares]
-
-            --silence-different-port-warning
-                Silence the warning when --user-port differs from the port specified in --user-root
 
             --uploads <UPLOADS>
                 Where to store uploads (relative to files) [default: uploads]
@@ -46,5 +42,7 @@ There are two web apps:
             --user-localhost-only
                 Bind the user app to localhost only (useful for dev)
 
-            --user-root <USER_ROOT>
-                [default: http://localhost:8080]
+            --user-url-prefix <USER_URL_PREFIX>
+                The URL of the root of the user app. Note that the app assumes that it is served at "/"
+                at the point the request reaches the app, i.e. if behind a reverse proxy, you must
+                rewrite URLs [default: http://localhost:8080]
