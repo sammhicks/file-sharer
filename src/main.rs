@@ -5,6 +5,7 @@ use futures_util::FutureExt;
 
 mod admin_app;
 mod controller;
+mod timestamp;
 mod user_app;
 
 #[derive(Debug, clap::Parser)]
@@ -14,9 +15,11 @@ pub struct AppConfig {
     #[clap(long, default_value = ".")]
     /// Where to store files
     files: PathBuf,
+
     #[clap(long, default_value = "shares")]
     /// Where to store shares (relative to files)
     shares: PathBuf,
+
     #[clap(long, default_value = "uploads")]
     /// Where to store uploads (relative to files)
     uploads: PathBuf,

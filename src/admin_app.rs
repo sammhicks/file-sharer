@@ -13,8 +13,9 @@ use axum::{
 };
 use axum_extra::routing::{RouterExt, TypedPath};
 
-use crate::controller::{
-    Admin, ByteCount, ShareConfig, ShareListing, Timestamp, Token, UploadConfig, UploadListing,
+use crate::{
+    controller::{Admin, ByteCount, ShareConfig, ShareListing, Token, UploadConfig, UploadListing},
+    timestamp::WebTimestamp,
 };
 
 #[derive(askama::Template)]
@@ -35,9 +36,15 @@ async fn home_page(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    let now = WebTimestamp::now().map_err(|err| {
+        tracing::error!("Failed to get current time: {err}",);
+
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     let new_share = NewShare {
         name: String::new(),
-        expiry: Timestamp::now() + chrono::Duration::days(1),
+        expiry: now + time::Duration::days(1),
     };
 
     let uploads = admin.current_uploads().await.map_err(|err| {
@@ -48,7 +55,7 @@ async fn home_page(
 
     let new_upload = NewUpload {
         name: String::new(),
-        expiry: Timestamp::now() + chrono::Duration::days(1),
+        expiry: now + time::Duration::days(1),
         space_quota: ByteCount(1_000_000_000),
     };
 
@@ -71,7 +78,7 @@ struct SharePagePath {
 #[template(path = "admin_share.html")]
 struct SharePage {
     name: String,
-    expiry: Timestamp,
+    expiry: WebTimestamp,
     upload_url: String,
 }
 
@@ -89,7 +96,7 @@ async fn current_share(
 
     Ok(SharePage {
         name,
-        expiry,
+        expiry: expiry.into(),
         upload_url,
     }
     .into_response())
@@ -99,7 +106,7 @@ async fn current_share(
 #[serde(rename_all = "camelCase")]
 struct NewShare {
     name: String,
-    expiry: Timestamp,
+    expiry: WebTimestamp,
 }
 
 async fn new_share(
@@ -107,7 +114,10 @@ async fn new_share(
     admin: axum::Extension<Admin>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let new_token = admin
-        .new_share_token(ShareConfig { name, expiry })
+        .new_share_token(ShareConfig {
+            name,
+            expiry: expiry.into(),
+        })
         .await
         .map_err(|err| {
             tracing::error!("Failed to create share token: {err:#}");
@@ -148,7 +158,7 @@ struct UploadPagePath {
 #[template(path = "admin_upload.html")]
 struct UploadPage {
     name: String,
-    expiry: Timestamp,
+    expiry: WebTimestamp,
     space_quota: ByteCount,
     upload_url: String,
 }
@@ -171,7 +181,7 @@ async fn current_upload(
 
     Ok(UploadPage {
         name,
-        expiry,
+        expiry: expiry.into(),
         space_quota,
         upload_url,
     }
@@ -182,7 +192,7 @@ async fn current_upload(
 #[serde(rename_all = "camelCase")]
 struct NewUpload {
     name: String,
-    expiry: Timestamp,
+    expiry: WebTimestamp,
     space_quota: ByteCount,
 }
 
@@ -197,7 +207,7 @@ async fn new_upload(
     let new_token = admin
         .new_upload_token(UploadConfig {
             name,
-            expiry,
+            expiry: expiry.into(),
             space_quota,
         })
         .await
